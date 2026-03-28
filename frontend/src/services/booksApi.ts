@@ -7,6 +7,7 @@ export async function fetchBooks(
   page: number,
   pageSize: number,
   dir: 'asc' | 'desc',
+  category?: string,
 ): Promise<PagedBooksResponse> {
   const params = new URLSearchParams({
     page: page.toString(),
@@ -15,6 +16,10 @@ export async function fetchBooks(
     dir,
   });
 
+  if (category) {
+    params.set('category', category);
+  }
+
   const response = await fetch(`${apiBaseUrl}/books?${params.toString()}`);
 
   if (!response.ok) {
@@ -22,4 +27,14 @@ export async function fetchBooks(
   }
 
   return (await response.json()) as PagedBooksResponse;
+}
+
+export async function fetchCategories(): Promise<string[]> {
+  const response = await fetch(`${apiBaseUrl}/books/categories`);
+
+  if (!response.ok) {
+    throw new Error('Failed to load categories.');
+  }
+
+  return (await response.json()) as string[];
 }

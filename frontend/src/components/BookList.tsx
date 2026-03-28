@@ -1,8 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fetchBooks } from '../services/booksApi';
-import type { PagedBooksResponse } from '../types/book';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useCart } from '../context/CartContext';
+import { fetchBooks, fetchCategories } from '../services/booksApi';
+import type { Book, PagedBooksResponse } from '../types/book';
 
 const pageSizeOptions = [5, 10, 15, 20];
+const LAST_LIST_LOCATION_KEY = 'bookstore-last-list-location';
+const RETURN_SCROLL_KEY = 'bookstore-return-scroll-y';
+
+function parsePositiveInt(value: string | null, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.floor(parsed));
+}
+
+function normalizePageSize(value: number): number {
+  return pageSizeOptions.includes(value) ? value : 5;
+}
 
 function createPageNumbers(currentPage: number, totalPages: number): number[] {
   if (totalPages <= 7) {
@@ -20,12 +37,92 @@ function createPageNumbers(currentPage: number, totalPages: number): number[] {
 }
 
 export default function BookList() {
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(5);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { addBook, itemCount, total } = useCart();
+
+  const [page, setPage] = useState(() => parsePositiveInt(searchParams.get('page'), 1));
+  const [pageSize, setPageSize] = useState(() =>
+    normalizePageSize(parsePositiveInt(searchParams.get('pageSize'), 5)),
+  );
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() =>
+    searchParams.get('dir') === 'desc' ? 'desc' : 'asc',
+  );
+  const [selectedCategory, setSelectedCategory] = useState(() => searchParams.get('category') ?? '');
+  const [categories, setCategories] = useState<string[]>([]);
   const [data, setData] = useState<PagedBooksResponse | null>(null);
+  const [quickViewBook, setQuickViewBook] = useState<Book | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const listSearch = useMemo(() => {
+    const params = new URLSearchParams({
+      page: page.toString(),
+      pageSize: pageSize.toString(),
+      dir: sortDir,
+    });
+
+    if (selectedCategory) {
+      params.set('category', selectedCategory);
+    }
+
+    return `?${params.toString()}`;
+  }, [page, pageSize, sortDir, selectedCategory]);
+
+  useEffect(() => {
+    setSearchParams(listSearch, { replace: true });
+  }, [listSearch, setSearchParams]);
+
+  useEffect(() => {
+    const normalizedPageSize = normalizePageSize(pageSize);
+    if (normalizedPageSize !== pageSize) {
+      setPageSize(normalizedPageSize);
+    }
+  }, [pageSize]);
+
+  useEffect(() => {
+    const storedScroll = sessionStorage.getItem(RETURN_SCROLL_KEY);
+    if (storedScroll) {
+      window.scrollTo({ top: Number(storedScroll) || 0, behavior: 'auto' });
+      sessionStorage.removeItem(RETURN_SCROLL_KEY);
+    }
+  }, [location.key]);
+
+  useEffect(() => {
+    if (!quickViewBook) {
+      return;
+    }
+
+    document.body.classList.add('modal-open');
+    return () => {
+      document.body.classList.remove('modal-open');
+    };
+  }, [quickViewBook]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function loadCategories() {
+      try {
+        const result = await fetchCategories();
+        if (!isCancelled) {
+          setCategories(result);
+        }
+      } catch {
+        // Keep the books table usable even if category options cannot be loaded.
+        if (!isCancelled) {
+          setCategories([]);
+        }
+      }
+    }
+
+    loadCategories();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let isCancelled = false;
@@ -35,7 +132,12 @@ export default function BookList() {
       setError(null);
 
       try {
-        const result = await fetchBooks(page, pageSize, sortDir);
+        const result = await fetchBooks(
+          page,
+          normalizePageSize(pageSize),
+          sortDir,
+          selectedCategory || undefined,
+        );
         if (!isCancelled) {
           setData(result);
         }
@@ -55,7 +157,7 @@ export default function BookList() {
     return () => {
       isCancelled = true;
     };
-  }, [page, pageSize, sortDir]);
+  }, [page, pageSize, sortDir, selectedCategory]);
 
   const pages = useMemo(() => {
     if (!data || data.totalPages === 0) {
@@ -67,6 +169,17 @@ export default function BookList() {
   const isPreviousDisabled = !data || data.page <= 1;
   const isNextDisabled = !data || data.page >= data.totalPages;
 
+  function rememberListLocation() {
+    const returnLocation = {
+      pathname: '/',
+      search: listSearch,
+      scrollY: window.scrollY,
+    };
+
+    sessionStorage.setItem(LAST_LIST_LOCATION_KEY, JSON.stringify(returnLocation));
+    return returnLocation;
+  }
+
   return (
     <section className="container py-4">
       <div className="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-3">
@@ -75,7 +188,48 @@ export default function BookList() {
           <p className="text-muted mb-0">Browse books with pagination and title sorting.</p>
         </div>
 
+        <div className="card border-0 shadow-sm" style={{ minWidth: 260 }}>
+          <div className="card-body py-2">
+            <div className="d-flex justify-content-between align-items-center mb-2">
+              <span className="fw-semibold">Cart Summary</span>
+              <span className="badge text-bg-primary rounded-pill">{itemCount} items</span>
+            </div>
+            <p className="mb-2">Total: ${total.toFixed(2)}</p>
+            <button
+              className="btn btn-sm btn-primary w-100"
+              type="button"
+              onClick={() => {
+                const returnTo = rememberListLocation();
+                navigate('/cart', { state: { returnTo } });
+              }}
+            >
+              View Cart
+            </button>
+          </div>
+        </div>
+
         <div className="d-flex flex-wrap gap-2 align-items-center">
+          <label className="form-label mb-0" htmlFor="categoryFilter">
+            Category
+          </label>
+          <select
+            id="categoryFilter"
+            className="form-select"
+            style={{ width: 'auto' }}
+            value={selectedCategory}
+            onChange={(event) => {
+              setSelectedCategory(event.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">All categories</option>
+            {categories.map((category) => (
+              <option key={category} value={category}>
+                {category}
+              </option>
+            ))}
+          </select>
+
           <label className="form-label mb-0" htmlFor="pageSize">
             Results per page
           </label>
@@ -131,6 +285,9 @@ export default function BookList() {
                   <th scope="col" className="text-end">
                     Price
                   </th>
+                  <th scope="col" className="text-end">
+                    Cart
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -144,6 +301,25 @@ export default function BookList() {
                     <td>{book.category}</td>
                     <td className="text-end">{book.pageCount}</td>
                     <td className="text-end">${book.price.toFixed(2)}</td>
+                    <td className="text-end">
+                      <button
+                        className="btn btn-sm btn-outline-secondary me-2"
+                        type="button"
+                        onClick={() => setQuickViewBook(book)}
+                      >
+                        Details
+                      </button>
+                      <button
+                        className="btn btn-sm btn-outline-success"
+                        type="button"
+                        onClick={() => {
+                          addBook(book);
+                          rememberListLocation();
+                        }}
+                      >
+                        Add to Cart
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -197,6 +373,76 @@ export default function BookList() {
               </ul>
             </nav>
           </div>
+        </>
+      )}
+
+      {quickViewBook && (
+        <>
+          <div className="modal fade show d-block" tabIndex={-1} role="dialog" aria-modal="true">
+            <div className="modal-dialog modal-dialog-centered modal-lg" role="document">
+              <div className="modal-content">
+                <div className="modal-header">
+                  <h2 className="modal-title fs-5">{quickViewBook.title}</h2>
+                  <button
+                    type="button"
+                    className="btn-close"
+                    aria-label="Close"
+                    onClick={() => setQuickViewBook(null)}
+                  />
+                </div>
+                <div className="modal-body">
+                  <div className="row g-3">
+                    <div className="col-md-6">
+                      <p className="mb-2">
+                        <strong>Author:</strong> {quickViewBook.author}
+                      </p>
+                      <p className="mb-2">
+                        <strong>Publisher:</strong> {quickViewBook.publisher}
+                      </p>
+                      <p className="mb-2">
+                        <strong>ISBN:</strong> {quickViewBook.isbn}
+                      </p>
+                    </div>
+                    <div className="col-md-6">
+                      <p className="mb-2">
+                        <strong>Classification:</strong> {quickViewBook.classification}
+                      </p>
+                      <p className="mb-2">
+                        <strong>Category:</strong> {quickViewBook.category}
+                      </p>
+                      <p className="mb-2">
+                        <strong>Pages:</strong> {quickViewBook.pageCount}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="modal-footer d-flex justify-content-between">
+                  <span className="fw-semibold">Price: ${quickViewBook.price.toFixed(2)}</span>
+                  <div className="d-flex gap-2">
+                    <button
+                      type="button"
+                      className="btn btn-outline-secondary"
+                      onClick={() => setQuickViewBook(null)}
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => {
+                        addBook(quickViewBook);
+                        rememberListLocation();
+                        setQuickViewBook(null);
+                      }}
+                    >
+                      Add to Cart
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="modal-backdrop fade show" onClick={() => setQuickViewBook(null)} />
         </>
       )}
     </section>

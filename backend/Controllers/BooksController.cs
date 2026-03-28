@@ -14,7 +14,8 @@ public class BooksController(BookstoreContext context) : ControllerBase
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 5,
         [FromQuery] string sort = "title",
-        [FromQuery] string dir = "asc")
+        [FromQuery] string dir = "asc",
+        [FromQuery] string? category = null)
     {
         if (page < 1)
         {
@@ -24,6 +25,13 @@ public class BooksController(BookstoreContext context) : ControllerBase
         pageSize = Math.Clamp(pageSize, 1, 100);
 
         IQueryable<Book> query = context.Books.AsNoTracking();
+
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            var trimmedCategory = category.Trim();
+            query = query.Where(book =>
+                EF.Functions.Collate(book.Category, "NOCASE") == trimmedCategory);
+        }
 
         var sortByTitle = string.Equals(sort, "title", StringComparison.OrdinalIgnoreCase);
         var sortDescending = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase);
@@ -50,6 +58,20 @@ public class BooksController(BookstoreContext context) : ControllerBase
             Sort = "title",
             Dir = sortDescending ? "desc" : "asc"
         });
+    }
+
+    [HttpGet("categories")]
+    public async Task<ActionResult<List<string>>> GetCategories()
+    {
+        var categories = await context.Books
+            .AsNoTracking()
+            .Where(book => !string.IsNullOrWhiteSpace(book.Category))
+            .Select(book => book.Category.Trim())
+            .Distinct()
+            .OrderBy(category => category)
+            .ToListAsync();
+
+        return Ok(categories);
     }
 }
 
